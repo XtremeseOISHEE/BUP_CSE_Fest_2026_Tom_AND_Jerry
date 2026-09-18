@@ -1,5 +1,9 @@
 # GridWise — Energy Optimizer Service
 
+Live API: https://gridwise-api-tom-and-jerry.onrender.com
+
+> Note: free-tier hosting may take 30-50s to wake up on the first request after inactivity.
+
 LLM-assisted 24-hour household/microgrid energy scheduling. An operator writes
 free-text notes ("don't discharge the battery 6-9pm"); an LLM interprets them
 into structured directives; a linear-programming optimizer produces a
