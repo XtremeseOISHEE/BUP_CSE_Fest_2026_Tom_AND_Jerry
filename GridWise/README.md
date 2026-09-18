@@ -2,6 +2,8 @@
 
 Live API: https://gridwise-api-tom-and-jerry.onrender.com
 
+Docker image: `docker pull oishee494jellyfish/gridwise-api:v1`
+
 > Note: free-tier hosting may take 30-50s to wake up on the first request after inactivity.
 
 LLM-assisted 24-hour household/microgrid energy scheduling. An operator writes
@@ -42,6 +44,14 @@ pip install -r requirements.txt
 
 ## Run locally
 
+Create a `.env` file in the project root containing your key (never commit it):
+
+```
+LLM_API_KEY=your_gemini_api_key_here
+```
+
+Then, from the project root:
+
 ```bash
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
@@ -51,10 +61,86 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 ## Run with Docker
 
+Pull the published image and run it, passing the key at runtime (it is not
+baked into the image):
+
+```bash
+docker pull oishee494jellyfish/gridwise-api:v1
+docker run -p 8000:8000 -e LLM_API_KEY=your_gemini_api_key_here oishee494jellyfish/gridwise-api:v1
+```
+
+Or build from source:
+
 ```bash
 docker build -t gridwise .
-docker run -p 8000:8000 gridwise
+docker run -p 8000:8000 -e LLM_API_KEY=your_gemini_api_key_here gridwise
 ```
+
+Either way the API is then at `http://localhost:8000`.
+
+## Sample request / response
+
+Send the request in `sample_cases/example_request.json` (24 hourly entries;
+abbreviated below):
+
+```bash
+curl -X POST https://gridwise-api-tom-and-jerry.onrender.com/optimize-energy \
+  -H "Content-Type: application/json" \
+  -d @sample_cases/example_request.json
+```
+
+Request (abbreviated):
+
+```json
+{
+  "scenario_id": "SAMPLE-03",
+  "operator_notes": [
+    "Keep at least 50% of the battery capacity stored in the battery from 6 PM until 9 PM for emergency operations."
+  ],
+  "hours": [
+    {"hour": 0, "demand_kwh": 90, "solar_kwh": 0, "tariff_bdt_per_kwh": 6},
+    "... hours 1-22 ...",
+    {"hour": 23, "demand_kwh": "...", "solar_kwh": "...", "tariff_bdt_per_kwh": "..."}
+  ],
+  "battery": {
+    "capacity_kwh": 200,
+    "initial_energy_kwh": 120,
+    "minimum_energy_kwh": 40,
+    "max_charge_kwh_per_hour": 50,
+    "max_discharge_kwh_per_hour": 50
+  }
+}
+```
+
+Response (abbreviated; `hourly_plan` has all 24 hours):
+
+```json
+{
+  "scenario_id": "SAMPLE-03",
+  "directive_interpretation": [
+    {
+      "note_index": 0,
+      "applies": true,
+      "directive_type": "minimum_battery_reserve",
+      "structured_adjustment": {"hours": [18, 19, 20], "minimum_energy_kwh": 100.0},
+      "explanation": "50% of the 200 kWh capacity is 100 kWh, which is reserved from 6 PM to 9 PM."
+    }
+  ],
+  "hourly_plan": [
+    {"hour": 0, "grid_kwh": 40.0, "solar_used_kwh": 0.0, "battery_action": "discharge", "battery_kwh": 50.0, "battery_energy_after_kwh": 70.0},
+    "... hours 1-17 ...",
+    {"hour": 18, "grid_kwh": 155.0, "solar_used_kwh": 0.0, "battery_action": "discharge", "battery_kwh": 50.0, "battery_energy_after_kwh": 150.0},
+    "... hours 19-23 ..."
+  ],
+  "total_grid_kwh": 2430.0,
+  "total_cost_bdt": 35480.0,
+  "peak_grid_kwh": 205.0,
+  "plan_summary": "Optimized 24h schedule for 'SAMPLE-03': total grid draw 2430.00 kWh, cost 35480.00 BDT, peak grid 205.00 kWh."
+}
+```
+
+Note how the LLM turned "50% of the battery capacity" into an absolute
+`minimum_energy_kwh` of 100, which the optimizer then enforced for hours 18-20.
 
 ## Testing against sample cases
 
@@ -70,6 +156,15 @@ checks the response for structural validity (24 unique hours, matching
 value for comparison. An exact schedule match is not required — the LP can
 find multiple optimal solutions with the same cost — only constraint
 validity and a comparable total cost matter.
+
+To run the 10-case public pack (`sample_cases.json`, includes the expected
+directives and costs) against the running API and the real LLM:
+
+```bash
+python sample_cases/run_sample_pack.py
+```
+
+Set `GRIDWISE_API_URL` to test a different host, e.g. the live API.
 
 To exercise the optimizer directly with a hardcoded directive (bypassing the
 API and the LLM), run:
