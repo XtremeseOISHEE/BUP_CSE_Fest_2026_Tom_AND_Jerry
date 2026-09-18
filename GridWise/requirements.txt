@@ -1,3 +1,7 @@
+google-genai
+pydantic
+python-dotenv
+pytest
 fastapi
 uvicorn
 pydantic
