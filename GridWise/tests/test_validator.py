@@ -1,4 +1,4 @@
-from app.validator import validate_interpretations
+from app.guardrail_validator import validate_interpretations
 
 
 def test_valid_solar_reduction():

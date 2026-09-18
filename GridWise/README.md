@@ -22,9 +22,15 @@ goes out.
   independently verifies every constraint and the reported totals. Runs as a
   safety net before every response; logs a warning (never crashes) if it
   finds a violation.
-- `app/main.py` — FastAPI app. `interpret_notes(operator_notes)`
-  is currently a stub that returns `no_op` for every note — swap in the LLM
-  interpreter here.
+- `app/interpreter.py` — `interpret_notes(operator_notes, battery=None)`
+  converts each note to a structured directive with Gemini. `battery` lets
+  the LLM resolve relative quantities ("50% of battery capacity") into
+  absolute kWh.
+- `app/guardrail_validator.py` — deterministic guardrail on the LLM output:
+  one directive per note, only allowed directive types, malformed output
+  falls back to `no_op`.
+- `app/main.py` — FastAPI app; calls `interpret_notes`, then the optimizer,
+  then the final-schedule validator.
 
 ## Setup (local)
 
@@ -66,7 +72,7 @@ find multiple optimal solutions with the same cost — only constraint
 validity and a comparable total cost matter.
 
 To exercise the optimizer directly with a hardcoded directive (bypassing the
-API and the LLM stub), run:
+API and the LLM), run:
 
 ```bash
 python sample_cases/_quick_optimizer_check.py
@@ -74,14 +80,16 @@ python sample_cases/_quick_optimizer_check.py
 
 ## Environment variables
 
-- `LLM_API_KEY` — placeholder for the LLM note-interpretation module
-  (Person A's component). Not currently read by this service; document it
-  here so it's ready when that module is wired in.
+- `LLM_API_KEY` — Gemini API key used by `app/interpreter.py`. Set it in a
+  local `.env` file (git-ignored) or in the host's environment settings.
+  Without it, every note safely falls back to `no_op`.
 
 ## Known limitations
 
-- `interpret_notes` is a stub returning `no_op` for every note
-  until the LLM interpreter module is integrated.
+- If the LLM call fails (bad key, quota, timeout), notes silently fall back
+  to `no_op` and the plan is optimized without them.
+- Relative quantities are resolved only from the battery config; notes
+  relative to anything else (e.g. peak demand) become `no_op`.
 - The optimizer assumes a single battery and a single grid connection point;
   no multi-battery or multi-site support.
 - `max_grid_window` directives only constrain the hours listed; if two

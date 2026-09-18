@@ -5,26 +5,13 @@ from pydantic import ValidationError
 
 from app.schemas import OptimizeRequest, OptimizeResponse, DirectiveInterpretation
 from app.optimizer import solve_schedule
+from app.interpreter import interpret_notes
 from app.validator import validate_final_schedule, validate_totals
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("gridwise")
 
 app = FastAPI(title="GridWise Energy Optimizer")
-
-
-def interpret_notes(operator_notes: list[str]) -> list[dict]:
-    """Stub — Person A's LLM interpreter will replace this. Returns no_op for every note."""
-    return [
-        {
-            "note_index": i,
-            "applies": False,
-            "directive_type": "no_op",
-            "structured_adjustment": None,
-            "explanation": "stub: LLM interpreter not yet wired in",
-        }
-        for i in range(len(operator_notes))
-    ]
 
 
 @app.get("/health")
@@ -38,7 +25,7 @@ def optimize_energy(request: OptimizeRequest):
         hours_data = [h.model_dump() for h in request.hours]
         battery = request.battery.model_dump()
 
-        directives = interpret_notes(request.operator_notes)
+        directives = interpret_notes(request.operator_notes, battery)
         directive_interpretation = [DirectiveInterpretation(**d) for d in directives]
 
         try:

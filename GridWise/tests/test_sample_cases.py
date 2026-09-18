@@ -89,7 +89,7 @@ def test_public_sample_directive_semantics(sample_cases, case_number, monkeypatc
     # Feed the official expected interpretation through our validator.
     monkeypatch.setattr(
         "app.interpreter._call_llm",
-        lambda operator_notes: expected
+        lambda operator_notes, battery=None: expected
     )
 
     actual = interpret_notes(notes)

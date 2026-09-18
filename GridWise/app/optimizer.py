@@ -115,12 +115,13 @@ def solve_schedule(hours_data: list[dict], battery: dict, directives: list[dict]
         discharge_val = max(0.0, pulp.value(discharge[h]))
         energy_after = max(0.0, pulp.value(battery_energy[h]))
 
-        if charge_val > discharge_val and charge_val > 1e-6:
+        net = charge_val - discharge_val
+        if net > 1e-6:
             action = "charge"
-            magnitude = charge_val
-        elif discharge_val > 1e-6:
+            magnitude = net
+        elif net < -1e-6:
             action = "discharge"
-            magnitude = discharge_val
+            magnitude = -net
         else:
             action = "idle"
             magnitude = 0.0

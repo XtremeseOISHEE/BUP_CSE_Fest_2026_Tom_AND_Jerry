@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
-from app.validator import validate_interpretations
+from app.guardrail_validator import _no_op, validate_interpretations
 
 
 load_dotenv()
@@ -130,6 +130,45 @@ Do NOT use factor = 0.8.
 
 
 ============================================================
+RELATIVE QUANTITIES AND BATTERY CONTEXT
+============================================================
+
+The user prompt may contain a BATTERY CONTEXT block with:
+
+capacity_kwh
+initial_energy_kwh
+minimum_energy_kwh   (the battery's normal base reserve)
+max_charge_kwh_per_hour
+max_discharge_kwh_per_hour
+
+Use it ONLY to convert a quantity phrased relative to the
+battery into an absolute kWh number. Output must always be
+absolute kWh, never a percentage or a phrase.
+
+Conversions for minimum_battery_reserve:
+
+- "X% of battery capacity"        -> capacity_kwh * X / 100
+- "half full" / "half charged"    -> capacity_kwh * 0.5
+- "fully charged" / "full"        -> capacity_kwh
+- "at its starting/initial level" -> initial_energy_kwh
+- "N kWh above the normal reserve"-> minimum_energy_kwh + N
+
+Round to at most 2 decimals. Never output a value above
+capacity_kwh.
+
+If the note uses an absolute kWh value, use it as written.
+
+If a note is phrased relative to the battery but the BATTERY
+CONTEXT block is missing, or is phrased relative to something
+that is not in the BATTERY CONTEXT (for example peak demand or
+yesterday's usage), use no_op. Do not guess.
+
+solar_reduction already uses a fraction (factor), and
+no_charge_window / no_discharge_window carry no quantity, so
+the battery context does not change them.
+
+
+============================================================
 DIRECTIVE SHAPES
 ============================================================
 
@@ -220,6 +259,26 @@ Interpretation:
 
 
 Example 3:
+
+Input (BATTERY CONTEXT capacity_kwh = 200):
+
+"Keep at least 50% of the battery capacity stored from 6 PM until 9 PM."
+
+Interpretation:
+
+{
+    "note_index": 0,
+    "applies": true,
+    "directive_type": "minimum_battery_reserve",
+    "structured_adjustment": {
+        "hours": [18, 19, 20],
+        "minimum_energy_kwh": 100.0
+    },
+    "explanation": "50% of the 200 kWh capacity is 100 kWh, reserved during the period."
+}
+
+
+Example 4:
 
 Input:
 
@@ -337,12 +396,67 @@ def _get_client() -> genai.Client:
     )
 
 
+BATTERY_CONTEXT_FIELDS = (
+    "capacity_kwh",
+    "initial_energy_kwh",
+    "minimum_energy_kwh",
+    "max_charge_kwh_per_hour",
+    "max_discharge_kwh_per_hour",
+)
+
+
+def _battery_context(
+    battery: Any,
+) -> dict[str, float]:
+    """
+    Reduce a battery dict/model to its known numeric fields.
+    """
+
+    if battery is None:
+        return {}
+
+    if hasattr(battery, "model_dump"):
+        battery = battery.model_dump()
+
+    if not isinstance(battery, dict):
+        return {}
+
+    return {
+        field: float(battery[field])
+        for field in BATTERY_CONTEXT_FIELDS
+        if isinstance(battery.get(field), (int, float))
+        and not isinstance(battery.get(field), bool)
+    }
+
+
 def _build_prompt(
     operator_notes: list[str],
+    battery: Any = None,
 ) -> str:
     """
     Build the user prompt.
     """
+
+    context = _battery_context(
+        battery
+    )
+
+    if context:
+
+        battery_block = (
+            "BATTERY CONTEXT (use only to resolve "
+            "relative quantities):\n"
+            + "\n".join(
+                f"{field}: {value:g}"
+                for field, value in context.items()
+            )
+        )
+
+    else:
+
+        battery_block = (
+            "BATTERY CONTEXT: not provided."
+        )
 
     numbered_notes = "\n".join(
         f"{index}: {note}"
@@ -359,6 +473,8 @@ There are exactly {len(operator_notes)} notes.
 You MUST return exactly one interpretation
 for every note.
 
+{battery_block}
+
 INPUT NOTES:
 
 {numbered_notes}
@@ -373,11 +489,14 @@ Remember:
 - Use exact structured_adjustment field names.
 - Follow start-inclusive/end-exclusive hours.
 - factor means usable fraction remaining.
+- Convert battery-relative quantities to absolute kWh
+  using the BATTERY CONTEXT; no_op if it is missing.
 """
 
 
 def _call_llm(
     operator_notes: list[str],
+    battery: Any = None,
 ) -> Any:
     """
     Call Gemini using structured JSON output.
@@ -386,7 +505,8 @@ def _call_llm(
     client = _get_client()
 
     prompt = _build_prompt(
-        operator_notes
+        operator_notes,
+        battery,
     )
 
     response = client.models.generate_content(
@@ -413,12 +533,15 @@ def _call_llm(
 
 def interpret_notes(
     operator_notes: list[str],
+    battery: dict | None = None,
 ) -> list[dict]:
     """
     Main Person A contract.
 
     Input:
         list[str]
+        battery (optional): request battery dict, used only to
+        resolve relative quantities such as "50% of capacity".
 
     Output:
         list[dict]
@@ -496,7 +619,8 @@ def interpret_notes(
     try:
 
         raw_output = _call_llm(
-            cleaned_notes
+            cleaned_notes,
+            battery,
         )
 
     except Exception:
@@ -511,7 +635,40 @@ def interpret_notes(
     # Deterministic validation
     # ---------------------------------------------------------
 
-    return validate_interpretations(
+    results = validate_interpretations(
         raw_output,
         number_of_notes,
     )
+
+    # A reserve above capacity is infeasible for the optimizer
+    # (e.g. an LLM arithmetic slip or a "150%" note): degrade to no_op.
+    capacity = _battery_context(
+        battery
+    ).get(
+        "capacity_kwh"
+    )
+
+    if capacity is not None:
+
+        for index, item in enumerate(
+            results
+        ):
+
+            adjustment = item.get(
+                "structured_adjustment"
+            )
+
+            if (
+                item.get("directive_type")
+                == "minimum_battery_reserve"
+                and adjustment
+                and adjustment["minimum_energy_kwh"] > capacity
+            ):
+
+                results[index] = _no_op(
+                    item["note_index"],
+                    "Requested reserve exceeds battery capacity; "
+                    "safely mapped to no_op.",
+                )
+
+    return results
